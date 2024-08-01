@@ -207,7 +207,6 @@ def main(
 
 
 if __name__ == "__main__":
-    # TODO: use argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("-x", type=float, required=True)
     parser.add_argument("-y", type=float, required=True)

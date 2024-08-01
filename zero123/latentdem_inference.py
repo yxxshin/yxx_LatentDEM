@@ -136,7 +136,6 @@ def sample_model(
             assert len(img_conds) == len(phis)
             img_num = len(img_conds)
 
-            # TODO: Fix using `cs` and `phis`
             z_samples, phis = sampler.sample(
                 S=ddim_steps,
                 batch_size=n_samples,

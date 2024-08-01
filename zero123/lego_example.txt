@@ -1,0 +1,2 @@
+../data/lego_example/r_0.png
+../data/lego_example/r_44.png

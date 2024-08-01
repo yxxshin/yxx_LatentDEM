@@ -1,0 +1,2 @@
+../data/shoe_example/001.png
+../data/shoe_example/002.png

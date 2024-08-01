@@ -721,8 +721,13 @@ class LatentDEMSampler(DDIMSampler):
             (z_total.shape[0], 1, 1, 1), self.betas[index], device=z_total.device
         )
         alpha_t = 1 - beta_t
-        gamma_n = beta_t / (img_num * beta_t + nu_t**2)
-        delta_n = (beta_t + nu_t**2) / (img_num * beta_t + nu_t**2)
+        # FIXME: Scheduling gammas and deltas
+
+        # gamma_n = beta_t / (img_num * beta_t + nu_t**2)
+        # delta_n = (beta_t + nu_t**2) / (img_num * beta_t + nu_t**2)
+
+        gamma_n = index / 100
+        delta_n = 1 - gamma_n
 
         z_weighted_sum = 0
         for i in range(len(z_list)):
@@ -771,14 +776,7 @@ class LatentDEMSampler(DDIMSampler):
 
             # Calculating phi_i^{(t-1)}
             loss1 = torch.sum((z_list_next[i] - z_total) ** 2)
-            # loss1.backward(retain_graph=True)
-            # phi_next = phis[i] - lambda_coef * phis[i].grad
-            # phis[i].grad.zero_()
-
             loss2 = torch.sum((z_list_next[i] - z_list_next[0]) ** 2)
-            # loss2.backward()
-            # phi_next -= delta_coef * phis[i].grad
-            # phis[i].grad.zero_()
 
             loss = lambda_coef * loss1 + delta_coef * loss2
             phi_grad = torch.autograd.grad(
