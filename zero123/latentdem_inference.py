@@ -82,6 +82,7 @@ def preprocess_image(models, input_im, preprocess):
 
 def sample_model(
     input_imgs,
+    init_poses,
     model,
     sampler,
     precision,
@@ -120,13 +121,24 @@ def sample_model(
                     phi = torch.tensor([x, y, z], requires_grad=False)
 
                 else:
-                    # Following zero123 demo settings
-                    random_x = random.uniform(-90.0, 90.0)
-                    random_y = random.uniform(-180.0, 180.0)
-                    random_z = random.uniform(-0.5, 0.5)
+                    if init_poses is not None:
+                        random_x = x - init_poses[i - 1][0]
+                        random_y = y - init_poses[i - 1][1]
+                        random_z = z - init_poses[i - 1][2]
+
+                    else:
+                        # Following zero123 demo settings
+                        # random.seed(11)
+                        random_x = random.uniform(-90.0, 90.0)
+                        random_y = random.uniform(-180.0, 180.0)
+                        # random_z = random.uniform(-0.5, 0.5)
+                        random_z = -0.5
+
                     phi = torch.tensor(
                         [random_x, random_y, random_z], requires_grad=True
                     )
+
+                    print(f"Initialized phis: {phi}")
 
                 img_conds.append(img_cond_dict)
                 phis.append(phi)
@@ -149,7 +161,7 @@ def sample_model(
                 x_T=None,
             )
 
-            print(z_samples.shape)
+            print(f"phis: {phis}")
             x_samples = model.decode_first_stage(z_samples)
             return torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0).cpu()
 
@@ -162,6 +174,7 @@ def main(
     y=0.0,
     z=0.0,
     img_paths=None,
+    init_poses=None,
     preprocess=True,
     scale=3.0,
     n_samples=1,
@@ -201,6 +214,7 @@ def main(
 
     x_samples_ddim = sample_model(
         input_imgs,
+        init_poses,
         models["turncam"],
         sampler,
         precision,
@@ -233,6 +247,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--output", "-o", type=str, required=True, help="Output file location"
+    )
+    parser.add_argument(
+        "--init_pose", "-p", type=str, help="Initial pose of images (phi2, phi3, ...)"
     )
     parser.add_argument("--ckpt", type=str, default="weights/zero123-xl.ckpt")
     parser.add_argument(
@@ -267,6 +284,23 @@ if __name__ == "__main__":
         paths = file.readlines()
         paths = [path.strip() for path in paths]
 
+    if args.init_pose is not None:
+        poses = []
+
+        with open(args.init_pose, "r") as file:
+            lines = file.readlines()
+
+        for line in lines:
+            line = line.strip()
+
+            if line:
+                pose = line.split(",")
+                pose = [float(value) for value in pose]
+                poses.append(pose)
+
+    else:
+        poses = None
+
     main(
         models=models,
         device=device,
@@ -275,5 +309,6 @@ if __name__ == "__main__":
         y=args.y,
         z=args.z,
         img_paths=paths,
+        init_poses=poses,
         preprocess=False,
     )
