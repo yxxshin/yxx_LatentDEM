@@ -102,6 +102,8 @@ def sample_model(
 
             img_conds = []
             phis = []
+            phis_perturb_plus = []
+            phis_perturb_minus = []
 
             for i, input_im in enumerate(input_imgs):
                 img_cond_dict = {}
@@ -116,9 +118,19 @@ def sample_model(
                     .repeat(n_samples, 1, 1, 1)
                 ]
 
+                perturb_x = 5
+                perturb_y = 10
+
                 # Only use x, y, z as phi_1 and fix it (not optimized).
                 if i == 0:
                     phi = torch.tensor([x, y, z], requires_grad=False)
+
+                    phi_perturb_plus = torch.tensor(
+                        [x + perturb_x, y + perturb_y, z], requires_grad=False
+                    )
+                    phi_perturb_minus = torch.tensor(
+                        [x - perturb_x, y - perturb_y, z], requires_grad=False
+                    )
 
                 else:
                     if init_poses is not None:
@@ -128,20 +140,36 @@ def sample_model(
 
                     else:
                         # Following zero123 demo settings
-                        # random.seed(11)
+                        random.seed(112)
                         random_x = random.uniform(-90.0, 90.0)
                         random_y = random.uniform(-180.0, 180.0)
                         # random_z = random.uniform(-0.5, 0.5)
-                        random_z = -0.5
+
+                        # random_x = 15.0
+                        # random_y = -45.0
+                        random_z = 0
 
                     phi = torch.tensor(
                         [random_x, random_y, random_z], requires_grad=True
+                    )
+
+                    phi_perturb_plus = torch.tensor(
+                        [random_x + perturb_x, random_y + perturb_y, random_z],
+                        requires_grad=True,
+                    )
+
+                    phi_perturb_minus = torch.tensor(
+                        [random_x - perturb_x, random_y - perturb_y, random_z],
+                        requires_grad=True,
                     )
 
                     print(f"Initialized phis: {phi}")
 
                 img_conds.append(img_cond_dict)
                 phis.append(phi)
+
+                phis_perturb_plus.append(phi_perturb_plus)
+                phis_perturb_minus.append(phi_perturb_minus)
 
             shape = [4, h // 8, w // 8]
 
@@ -159,6 +187,8 @@ def sample_model(
                 unconditional_guidance_scale=scale,
                 eta=ddim_eta,
                 x_T=None,
+                phis_perturb_plus=phis_perturb_plus,
+                phis_perturb_minus=phis_perturb_minus,
             )
 
             print(f"phis: {phis}")

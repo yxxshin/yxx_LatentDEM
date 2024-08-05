@@ -549,6 +549,8 @@ class LatentDEMSampler(DDIMSampler):
         x_T=None,
         log_every_t=100,
         unconditional_guidance_scale=1.0,
+        phis_perturb_plus=None,
+        phis_perturb_minus=None,
     ):
 
         device = self.model.betas.device
@@ -571,11 +573,16 @@ class LatentDEMSampler(DDIMSampler):
 
         # Initialize z_t(y_i, phi_i)
         z_list = []
+        z_list_perturb_plus = []
+        z_list_perturb_minus = []
 
         if x_T is None:
             for _ in range(img_num):
                 z = torch.randn(size, device=device)
                 z_list.append(z)
+
+                z_list_perturb_plus.append(torch.randn(size, device=device))
+                z_list_perturb_minus.append(torch.randn(size, device=device))
         else:
             z = x_T
             z_list = [z] * img_num
@@ -602,7 +609,26 @@ class LatentDEMSampler(DDIMSampler):
                 shape=size,
             )
 
+            conds_perturb_plus, ucs = self.update_conds(
+                img_conds=img_conds,
+                phis=phis_perturb_plus,
+                scale=unconditional_guidance_scale,
+                n_samples=batch_size,
+                shape=size,
+            )
+
+            conds_perturb_minus, ucs = self.update_conds(
+                img_conds=img_conds,
+                phis=phis_perturb_minus,
+                scale=unconditional_guidance_scale,
+                n_samples=batch_size,
+                shape=size,
+            )
+
             z_list_next = []
+
+            z_list_next_perturb_plus = []
+            z_list_next_perturb_minus = []
 
             assert len(z_list) == len(conds) == len(ucs) == img_num
 
@@ -623,6 +649,30 @@ class LatentDEMSampler(DDIMSampler):
 
                 z_list_next.append(z_t_next)
 
+                z_t_perturb_plus = z_list_perturb_plus[j]
+                z_t_next_perturb_plus, _ = self.p_sample_ddim(
+                    z=z_t_perturb_plus,
+                    c=conds_perturb_plus[j],
+                    t=ts,
+                    index=index,
+                    unconditional_guidance_scale=unconditional_guidance_scale,
+                    unconditional_conditioning=ucs[j],
+                )
+
+                z_list_next_perturb_plus.append(z_t_next_perturb_plus)
+
+                z_t_perturb_minus = z_list_perturb_minus[j]
+                z_t_next_perturb_minus, _ = self.p_sample_ddim(
+                    z=z_t_perturb_minus,
+                    c=conds_perturb_minus[j],
+                    t=ts,
+                    index=index,
+                    unconditional_guidance_scale=unconditional_guidance_scale,
+                    unconditional_conditioning=ucs[j],
+                )
+
+                z_list_next_perturb_minus.append(z_t_next_perturb_minus)
+
             # E-step: z_{t-1}(y_1, phi_1, y_2, phi_2, ..., y_n, phi_n)
             z_total = self.E_step(
                 z_total=z_total,
@@ -641,14 +691,21 @@ class LatentDEMSampler(DDIMSampler):
                 img_num=img_num,
                 z_total=z_total,
                 z_list_next=z_list_next,
+                z_list_next_perturb_plus=z_list_next_perturb_plus,
+                z_list_next_perturb_minus=z_list_next_perturb_minus,
                 index=index,
             )
 
-            z_list_next[0] = z_total
+            # FIXME
+            # z_list_next[0] = z_total
 
             z_list = copy.copy(z_list_next)
+            z_list_perturb_plus = copy.copy(z_list_next_perturb_plus)
+            z_list_perturb_minus = copy.copy(z_list_next_perturb_minus)
 
-        return z_list[0], phis
+        # FIXME
+        # return z_list[0], phis
+        return z_list[1], phis
 
     def p_sample_ddim(
         self,
@@ -751,9 +808,19 @@ class LatentDEMSampler(DDIMSampler):
             - (1 / alpha_t.sqrt()) * z_weighted_sum
         )
 
-        return z_total
+        # return z_total
+        return z_list_next[1]
 
-    def M_step(self, phis, img_num, z_total, z_list_next, index):
+    def M_step(
+        self,
+        phis,
+        img_num,
+        z_total,
+        z_list_next,
+        z_list_next_perturb_plus,
+        z_list_next_perturb_minus,
+        index,
+    ):
 
         assert len(phis) == img_num
 
@@ -766,15 +833,38 @@ class LatentDEMSampler(DDIMSampler):
 
         z_list_next[0] = z_list_next[0].detach()
 
+        z_list_next_perturb_plus[0] = z_list_next_perturb_plus[0].detach()
+        z_list_next_perturb_minus[0] = z_list_next_perturb_minus[0].detach()
+
         for i in range(1, img_num):
 
             # phi_1 is fixed and not optimized
 
             # Calculating phi_i^{(t-1)}
-            loss1 = torch.sum((z_list_next[i] - z_total) ** 2)
+            # loss1 = torch.sum((z_list_next[i] - z_total) ** 2)
             loss2 = torch.sum((z_list_next[i] - z_list_next[0]) ** 2)
 
-            loss = lambda_coef * loss1 + delta_coef * loss2
+            loss_test = torch.sum(
+                (
+                    self.model.decode_first_stage(z_list_next[i])
+                    - self.model.decode_first_stage(z_list_next[0])
+                )
+                ** 2
+            )
+
+            loss_perturb_plus = torch.sum(
+                (z_list_next_perturb_plus[i] - z_list_next_perturb_plus[0]) ** 2
+            )
+            loss_perturb_minus = torch.sum(
+                (z_list_next_perturb_minus[i] - z_list_next_perturb_minus[0]) ** 2
+            )
+
+            # loss = lambda_coef * loss1 + delta_coef * loss2
+            # loss = loss_test
+            # loss = loss2
+
+            loss = loss2 + loss_perturb_plus + loss_perturb_minus
+
             phi_grad = torch.autograd.grad(
                 outputs=loss,
                 inputs=phis[i],
@@ -783,10 +873,11 @@ class LatentDEMSampler(DDIMSampler):
             # FIXME: Currently z is not updated
             phi_grad[0][2] = 0
 
-            lr = 0.01 ** ((50 - index) / 50)
-            phi_next = phis[i] - phi_grad[0] * lr
+            lr = 0.1 ** ((50 - index) / 50)
+            scale = 5
+            phi_next = phis[i] - phi_grad[0] * scale * lr
 
             phis_next.append(phi_next.detach())
-            print(phis_next)
+            print(f"Loss(Latent):{loss2}, Loss(Image):{loss_test}, phi2:{phi_next}")
 
         return phis_next
