@@ -635,11 +635,13 @@ class LatentDEMSampler(DDIMSampler):
 
             # M-step
             # Optimize phis, except phi_1
+
             phis = self.M_step(
                 phis=phis,
                 img_num=img_num,
                 z_total=z_total,
                 z_list_next=z_list_next,
+                index=index,
             )
 
             z_list_next[0] = z_total
@@ -751,19 +753,13 @@ class LatentDEMSampler(DDIMSampler):
 
         return z_total
 
-    def M_step(
-        self,
-        phis,
-        img_num,
-        z_total,
-        z_list_next,
-    ):
+    def M_step(self, phis, img_num, z_total, z_list_next, index):
 
         assert len(phis) == img_num
 
         # TODO: Lambda, Delta Scheduling
-        lambda_coef = 2e-4
-        delta_coef = 2e-4
+        lambda_coef = 10
+        delta_coef = 10
 
         phis_next = []
         phis_next.append(phis[0])
@@ -784,8 +780,13 @@ class LatentDEMSampler(DDIMSampler):
                 inputs=phis[i],
             )
 
-            phi_next = phis[i] - phi_grad[0]
+            # FIXME: Currently z is not updated
+            phi_grad[0][2] = 0
+
+            lr = 0.01 ** ((50 - index) / 50)
+            phi_next = phis[i] - phi_grad[0] * lr
 
             phis_next.append(phi_next.detach())
+            print(phis_next)
 
         return phis_next
