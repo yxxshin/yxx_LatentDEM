@@ -95,6 +95,7 @@ def sample_model(
     x,
     y,
     z,
+    skip_Mstep,
 ):
     precision_scope = autocast if precision == "autocast" else nullcontext
     with precision_scope("cuda"):
@@ -102,8 +103,6 @@ def sample_model(
 
             img_conds = []
             phis = []
-            phis_perturb_plus = []
-            phis_perturb_minus = []
 
             for i, input_im in enumerate(input_imgs):
                 img_cond_dict = {}
@@ -118,19 +117,9 @@ def sample_model(
                     .repeat(n_samples, 1, 1, 1)
                 ]
 
-                perturb_x = 5
-                perturb_y = 10
-
                 # Only use x, y, z as phi_1 and fix it (not optimized).
                 if i == 0:
                     phi = torch.tensor([x, y, z], requires_grad=False)
-
-                    phi_perturb_plus = torch.tensor(
-                        [x + perturb_x, y + perturb_y, z], requires_grad=False
-                    )
-                    phi_perturb_minus = torch.tensor(
-                        [x - perturb_x, y - perturb_y, z], requires_grad=False
-                    )
 
                 else:
                     if init_poses is not None:
@@ -140,36 +129,29 @@ def sample_model(
 
                     else:
                         # Following zero123 demo settings
-                        random.seed(112)
+                        random.seed(1234)
                         random_x = random.uniform(-90.0, 90.0)
                         random_y = random.uniform(-180.0, 180.0)
                         # random_z = random.uniform(-0.5, 0.5)
-
-                        # random_x = 15.0
-                        # random_y = -45.0
                         random_z = 0
 
-                    phi = torch.tensor(
-                        [random_x, random_y, random_z], requires_grad=True
-                    )
+                    if skip_Mstep:
+                        # Phi is not optimizd
+                        phi = torch.tensor(
+                            [random_x, random_y, random_z], requires_grad=False
+                        )
 
-                    phi_perturb_plus = torch.tensor(
-                        [random_x + perturb_x, random_y + perturb_y, random_z],
-                        requires_grad=True,
-                    )
+                    else:
+                        # Phi optimized
+                        phi = torch.tensor(
+                            [random_x, random_y, random_z], requires_grad=True
+                        )
 
-                    phi_perturb_minus = torch.tensor(
-                        [random_x - perturb_x, random_y - perturb_y, random_z],
-                        requires_grad=True,
-                    )
-
-                    print(f"Initialized phis: {phi}")
+                    print(f"\n*** Initialized phis *** : {phi}\n")
 
                 img_conds.append(img_cond_dict)
-                phis.append(phi)
 
-                phis_perturb_plus.append(phi_perturb_plus)
-                phis_perturb_minus.append(phi_perturb_minus)
+                phis.append(phi)
 
             shape = [4, h // 8, w // 8]
 
@@ -187,8 +169,7 @@ def sample_model(
                 unconditional_guidance_scale=scale,
                 eta=ddim_eta,
                 x_T=None,
-                phis_perturb_plus=phis_perturb_plus,
-                phis_perturb_minus=phis_perturb_minus,
+                skip_Mstep=skip_Mstep,
             )
 
             print(f"phis: {phis}")
@@ -206,6 +187,7 @@ def main(
     img_paths=None,
     init_poses=None,
     preprocess=True,
+    skip_Mstep=False,
     scale=3.0,
     n_samples=1,
     ddim_steps=50,
@@ -257,6 +239,7 @@ def main(
         x,
         y,
         z,
+        skip_Mstep,
     )
 
     output_ims = []
@@ -280,6 +263,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--init_pose", "-p", type=str, help="Initial pose of images (phi2, phi3, ...)"
+    )
+    parser.add_argument(
+        "--use_gt",
+        action="store_true",
+        help="If on, skip M step and use initial pose",
     )
     parser.add_argument("--ckpt", type=str, default="weights/zero123-xl.ckpt")
     parser.add_argument(
@@ -331,6 +319,9 @@ if __name__ == "__main__":
     else:
         poses = None
 
+    if poses == None and args.use_gt:
+        raise ValueError("Initial pose needed for use_gt mode")
+
     main(
         models=models,
         device=device,
@@ -341,4 +332,5 @@ if __name__ == "__main__":
         img_paths=paths,
         init_poses=poses,
         preprocess=False,
+        skip_Mstep=args.use_gt,
     )
