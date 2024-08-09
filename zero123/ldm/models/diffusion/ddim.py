@@ -637,29 +637,50 @@ class LatentDEMSampler(DDIMSampler):
                             print(f"-> z_list updated")
                             z_list[j] = z_t
 
-                        z_t, _ = self.p_sample_ddim(
-                            z=z_t,
-                            c=conds[j],
-                            t=ts_sfs,
-                            index=index_sfs,
-                            unconditional_guidance_scale=unconditional_guidance_scale,
-                            unconditional_conditioning=ucs[j],
-                        )
+                        if skip_Mstep:
+                            with torch.no_grad():
+                                z_t, _ = self.p_sample_ddim(
+                                    z=z_t,
+                                    c=conds[j],
+                                    t=ts_sfs,
+                                    index=index_sfs,
+                                    unconditional_guidance_scale=unconditional_guidance_scale,
+                                    unconditional_conditioning=ucs[j],
+                                )
+                        else:
+                            z_t, _ = self.p_sample_ddim(
+                                z=z_t,
+                                c=conds[j],
+                                t=ts_sfs,
+                                index=index_sfs,
+                                unconditional_guidance_scale=unconditional_guidance_scale,
+                                unconditional_conditioning=ucs[j],
+                            )
 
                     z_t_next = z_t
 
                 else:
-                    z_t_next, _ = self.p_sample_ddim(
-                        z=z_t,
-                        c=conds[j],
-                        t=ts,
-                        index=index,
-                        unconditional_guidance_scale=unconditional_guidance_scale,
-                        unconditional_conditioning=ucs[j],
-                    )
+                    if skip_Mstep:
+                        with torch.no_grad():
+                            z_t_next, _ = self.p_sample_ddim(
+                                z=z_t,
+                                c=conds[j],
+                                t=ts,
+                                index=index,
+                                unconditional_guidance_scale=unconditional_guidance_scale,
+                                unconditional_conditioning=ucs[j],
+                            )
+                    else:
+                        z_t_next, _ = self.p_sample_ddim(
+                            z=z_t,
+                            c=conds[j],
+                            t=ts,
+                            index=index,
+                            unconditional_guidance_scale=unconditional_guidance_scale,
+                            unconditional_conditioning=ucs[j],
+                        )
 
-                if skip_Mstep:
-                    z_t_next = z_t_next.detach()
+                    torch.cuda.empty_cache()
 
                 assert (
                     z_t_next.requires_grad == conds[j]["c_crossattn"][0].requires_grad
@@ -698,8 +719,6 @@ class LatentDEMSampler(DDIMSampler):
             # z_list_next[1] = z_total
 
             z_list = copy.copy(z_list_next)
-
-            torch.cuda.empty_cache()
 
         return z_total, phis
 
