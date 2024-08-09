@@ -1,6 +1,5 @@
 import argparse
 import math
-import random
 import time
 from contextlib import nullcontext
 
@@ -17,7 +16,7 @@ from torch import autocast
 from torchvision import transforms
 from transformers import AutoFeatureExtractor
 
-from ldm.models.diffusion.ddim import LatentDEMSampler
+from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.util import (
     create_carvekit_interface,
     instantiate_from_config,
@@ -80,9 +79,9 @@ def preprocess_image(models, input_im, preprocess):
     return input_im
 
 
+@torch.no_grad()
 def sample_model(
-    input_imgs,
-    init_poses,
+    input_im,
     model,
     sampler,
     precision,
@@ -95,89 +94,55 @@ def sample_model(
     x,
     y,
     z,
-    skip_Mstep,
-    sample_from_start,
 ):
     precision_scope = autocast if precision == "autocast" else nullcontext
     with precision_scope("cuda"):
         with model.ema_scope():
+            c = model.get_learned_conditioning(input_im).tile(n_samples, 1, 1)
 
-            img_conds = []
-            phis = []
-
-            for i, input_im in enumerate(input_imgs):
-                img_cond_dict = {}
-
-                c = model.get_learned_conditioning(input_im).tile(n_samples, 1, 1)
-                img_cond_dict["c_original"] = c
-                img_cond_dict["c_crossattn"] = None
-                img_cond_dict["c_concat"] = [
-                    model.encode_first_stage((input_im.to(c.device)))
-                    .mode()
-                    .detach()
-                    .repeat(n_samples, 1, 1, 1)
+            T = torch.tensor(
+                [
+                    math.radians(x),
+                    math.sin(math.radians(y)),
+                    math.cos(math.radians(y)),
+                    z,
                 ]
-
-                # Only use x, y, z as phi_1 and fix it (not optimized).
-                if i == 0:
-                    phi = torch.tensor([x, y, z], requires_grad=False)
-
-                else:
-                    if init_poses is not None:
-                        random_x = x - init_poses[i - 1][0]
-                        random_y = y - init_poses[i - 1][1]
-                        random_z = z - init_poses[i - 1][2]
-
-                    else:
-                        # Following zero123 demo settings
-                        random.seed(1234)
-                        random_x = random.uniform(-90.0, 90.0)
-                        random_y = random.uniform(-180.0, 180.0)
-                        # random_z = random.uniform(-0.5, 0.5)
-                        random_z = 0
-
-                    if skip_Mstep:
-                        # Phi is not optimizd
-                        phi = torch.tensor(
-                            [random_x, random_y, random_z], requires_grad=False
-                        )
-
-                    else:
-                        # Phi optimized
-                        phi = torch.tensor(
-                            [random_x, random_y, random_z], requires_grad=True
-                        )
-
-                    print(f"\n*** Initialized phis *** : {phi}\n")
-
-                img_conds.append(img_cond_dict)
-
-                phis.append(phi)
+            )
+            T = T[None, None, :].repeat(n_samples, 1, 1).to(c.device)
+            c = torch.cat([c, T], dim=-1)
+            c = model.cc_projection(c)
+            cond = {}
+            cond["c_crossattn"] = [c]
+            cond["c_concat"] = [
+                model.encode_first_stage((input_im.to(c.device)))
+                .mode()
+                .detach()
+                .repeat(n_samples, 1, 1, 1)
+            ]
+            if scale != 1.0:
+                uc = {}
+                uc["c_concat"] = [
+                    torch.zeros(n_samples, 4, h // 8, w // 8).to(c.device)
+                ]
+                uc["c_crossattn"] = [torch.zeros_like(c).to(c.device)]
+            else:
+                uc = None
 
             shape = [4, h // 8, w // 8]
-
-            assert len(img_conds) == len(phis)
-            img_num = len(img_conds)
-
-            z_samples, phis = sampler.sample(
+            samples_ddim, _ = sampler.sample(
                 S=ddim_steps,
+                conditioning=cond,
                 batch_size=n_samples,
                 shape=shape,
-                img_num=img_num,
-                img_conds=img_conds,
-                phis=phis,
                 verbose=False,
                 unconditional_guidance_scale=scale,
+                unconditional_conditioning=uc,
                 eta=ddim_eta,
                 x_T=None,
-                skip_Mstep=skip_Mstep,
-                sample_from_start=sample_from_start,
             )
-
-            print(f"phis: {phis}")
-
-            x_samples = model.decode_first_stage(z_samples)
-            return torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0).cpu()
+            print(samples_ddim.shape)
+            x_samples_ddim = model.decode_first_stage(samples_ddim)
+            return torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0).cpu()
 
 
 def main(
@@ -187,11 +152,8 @@ def main(
     x=0.0,
     y=0.0,
     z=0.0,
-    img_paths=None,
-    init_poses=None,
+    raw_im=None,
     preprocess=True,
-    skip_Mstep=False,
-    sample_from_start=True,
     scale=3.0,
     n_samples=1,
     ddim_steps=50,
@@ -212,25 +174,15 @@ def main(
     #
     # print("Safety check passed.")
 
-    input_imgs = []
+    input_im = preprocess_image(models, raw_im, preprocess)
 
-    print(f"Input images: {img_paths}")
+    input_im = transforms.ToTensor()(input_im).unsqueeze(0).to(device)
+    input_im = input_im * 2 - 1
+    input_im = transforms.functional.resize(input_im, [h, w])
 
-    for path in img_paths:
-        input_im = Image.open(path)
-
-        input_im = preprocess_image(models, input_im, preprocess)
-        input_im = transforms.ToTensor()(input_im).unsqueeze(0).to(device)
-        input_im = input_im * 2 - 1
-        input_im = transforms.functional.resize(input_im, [h, w])
-
-        input_imgs.append(input_im)
-
-    sampler = LatentDEMSampler(models["turncam"])
-
+    sampler = DDIMSampler(models["turncam"])
     x_samples_ddim = sample_model(
-        input_imgs,
-        init_poses,
+        input_im,
         models["turncam"],
         sampler,
         precision,
@@ -243,42 +195,20 @@ def main(
         x,
         y,
         z,
-        skip_Mstep,
-        sample_from_start,
     )
 
     output_ims = []
     for x_sample in x_samples_ddim:
-        x_sample = 255.0 * rearrange(x_sample.detach().cpu().numpy(), "c h w -> h w c")
+        x_sample = 255.0 * rearrange(x_sample.cpu().numpy(), "c h w -> h w c")
         output_ims.append(Image.fromarray(x_sample.astype(np.uint8)))
 
+    print(output_ims)
     output_ims[0].save(output)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-x", type=float, required=True)
-    parser.add_argument("-y", type=float, required=True)
-    parser.add_argument("-z", type=float, required=True)
-    parser.add_argument(
-        "--input", "-i", type=str, required=True, help="Input images (Text File)"
-    )
-    parser.add_argument(
-        "--output", "-o", type=str, required=True, help="Output file location"
-    )
-    parser.add_argument(
-        "--init_pose", "-p", type=str, help="Initial pose of images (phi2, phi3, ...)"
-    )
-    parser.add_argument(
-        "--use_gt",
-        action="store_true",
-        help="If on, skip M step and use initial pose",
-    )
-    parser.add_argument(
-        "--sample_from_start",
-        action="store_true",
-        help="If on, sample phi2 from T during every timestep (original LatentDEM)",
-    )
+    parser.add_argument("--input", "-i", type=str, required=True, help="Input image")
     parser.add_argument("--ckpt", type=str, default="weights/zero123-xl.ckpt")
     parser.add_argument(
         "--config", type=str, default="configs/sd-objaverse-finetune-c_concat-256.yaml"
@@ -289,6 +219,7 @@ if __name__ == "__main__":
 
     device = f"cuda:{args.gpu}"
     config = OmegaConf.load(args.config)
+    raw_im = Image.open(args.input)
 
     # Instantiate all models beforehand for efficiency.
     models = dict()
@@ -308,40 +239,32 @@ if __name__ == "__main__":
     # models["nsfw"].concept_embeds_weights *= 1.07
     # models["nsfw"].special_care_embeds_weights *= 1.07
 
-    with open(args.input, "r") as file:
-        paths = file.readlines()
-        paths = [path.strip() for path in paths]
+    angles = [
+        [16.22, 194.04],
+        [16.22, 204.04],
+        [16.22, 214.04],
+        [16.22, 224.04],
+        [16.22, 234.04],
+        [16.22, 244.04],
+        [16.22, 254.04],
+        [16.22, 264.04],
+        [16.22, 274.04],
+        [16.22, 284.04],
+        [16.22, 294.04],
+        [16.22, 304.04],
+        [16.22, 314.04],
+    ]
 
-    if args.init_pose is not None:
-        poses = []
+    for i in range(len(angles)):
+        print(f"Angles: ({angles[i][0]}, {angles[i][1]})")
 
-        with open(args.init_pose, "r") as file:
-            lines = file.readlines()
-
-        for line in lines:
-            line = line.strip()
-
-            if line:
-                pose = line.split(",")
-                pose = [float(value) for value in pose]
-                poses.append(pose)
-
-    else:
-        poses = None
-
-    if poses == None and args.use_gt:
-        raise ValueError("Initial pose needed for use_gt mode")
-
-    main(
-        models=models,
-        device=device,
-        output=args.output,
-        x=args.x,
-        y=args.y,
-        z=args.z,
-        img_paths=paths,
-        init_poses=poses,
-        preprocess=False,
-        skip_Mstep=args.use_gt,
-        sample_from_start=args.sample_from_start,
-    )
+        main(
+            models=models,
+            device=device,
+            output=f"../data/0808_results/12/backpack_side2/zero123_{angles[i][0]}_{angles[i][1]}.png",
+            x=angles[i][0],
+            y=angles[i][1],
+            z=0,
+            raw_im=raw_im,
+            preprocess=False,
+        )

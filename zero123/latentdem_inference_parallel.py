@@ -175,7 +175,6 @@ def sample_model(
             )
 
             print(f"phis: {phis}")
-
             x_samples = model.decode_first_stage(z_samples)
             return torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0).cpu()
 
@@ -257,14 +256,8 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-x", type=float, required=True)
-    parser.add_argument("-y", type=float, required=True)
-    parser.add_argument("-z", type=float, required=True)
     parser.add_argument(
         "--input", "-i", type=str, required=True, help="Input images (Text File)"
-    )
-    parser.add_argument(
-        "--output", "-o", type=str, required=True, help="Output file location"
     )
     parser.add_argument(
         "--init_pose", "-p", type=str, help="Initial pose of images (phi2, phi3, ...)"
@@ -332,16 +325,35 @@ if __name__ == "__main__":
     if poses == None and args.use_gt:
         raise ValueError("Initial pose needed for use_gt mode")
 
-    main(
-        models=models,
-        device=device,
-        output=args.output,
-        x=args.x,
-        y=args.y,
-        z=args.z,
-        img_paths=paths,
-        init_poses=poses,
-        preprocess=False,
-        skip_Mstep=args.use_gt,
-        sample_from_start=args.sample_from_start,
-    )
+    angles = [
+        [0, 0],
+        [0, 10],
+        [0, 20],
+        [0, 30],
+        [0, 40],
+        [0, 50],
+        [0, 60],
+        [0, 70],
+        [0, 80],
+        [0, 90],
+        [0, 100],
+        [0, 110],
+        [0, 120],
+    ]
+
+    for i in range(len(angles)):
+        print(f"Angles: ({angles[i][0]}, {angles[i][1]})")
+
+        main(
+            models=models,
+            device=device,
+            output=f"../data/0809_results/14/backpack/latentdem_{angles[i][0]}_{angles[i][1]}.png",
+            x=angles[i][0],
+            y=angles[i][1],
+            z=0,
+            img_paths=paths,
+            init_poses=poses,
+            preprocess=False,
+            skip_Mstep=args.use_gt,
+            sample_from_start=args.sample_from_start,
+        )

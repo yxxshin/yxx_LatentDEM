@@ -5,6 +5,7 @@ import math
 
 import numpy as np
 import torch
+from lovely_numpy.repr_plt import sample
 from tqdm import tqdm
 
 from ldm.models.diffusion.sampling_util import norm_thresholding
@@ -547,6 +548,7 @@ class LatentDEMSampler(DDIMSampler):
         log_every_t=100,
         unconditional_guidance_scale=1.0,
         skip_Mstep=False,
+        sample_from_start=True,
     ):
 
         device = self.model.betas.device
@@ -569,9 +571,10 @@ class LatentDEMSampler(DDIMSampler):
 
         # Initialize z_t(y_i, phi_i)
         z_list = []
+        z_list_next = []
 
         if x_T is None:
-            for _ in range(img_num):
+            for j in range(img_num):
                 z = torch.randn(size, device=device)
                 z_list.append(z)
 
@@ -610,14 +613,50 @@ class LatentDEMSampler(DDIMSampler):
             # Sample z_{t-1}(y_i, phi_i)
             for j in range(img_num):
                 z_t = z_list[j]
-                z_t_next, _ = self.p_sample_ddim(
-                    z=z_t,
-                    c=conds[j],
-                    t=ts,
-                    index=index,
-                    unconditional_guidance_scale=unconditional_guidance_scale,
-                    unconditional_conditioning=ucs[j],
-                )
+
+                if sample_from_start and j != 0:
+                    # For every timestep, sample from T (T -> t)
+
+                    # For seed fix, uncomment the following line
+                    # torch.manual_seed(123)
+
+                    z_t = torch.randn(size, device=device)
+
+                    for i_sfs, step_sfs in enumerate(iterator):
+
+                        if i_sfs == i + 1:
+                            break
+
+                        index_sfs = total_steps - i_sfs - 1
+                        print(f"index_sfs: {index_sfs}")
+                        ts_sfs = torch.full(
+                            (batch_size,), step_sfs, device=device, dtype=torch.long
+                        )
+
+                        if index_sfs == index:
+                            print(f"-> z_list updated")
+                            z_list[j] = z_t
+
+                        z_t, _ = self.p_sample_ddim(
+                            z=z_t,
+                            c=conds[j],
+                            t=ts_sfs,
+                            index=index_sfs,
+                            unconditional_guidance_scale=unconditional_guidance_scale,
+                            unconditional_conditioning=ucs[j],
+                        )
+
+                    z_t_next = z_t
+
+                else:
+                    z_t_next, _ = self.p_sample_ddim(
+                        z=z_t,
+                        c=conds[j],
+                        t=ts,
+                        index=index,
+                        unconditional_guidance_scale=unconditional_guidance_scale,
+                        unconditional_conditioning=ucs[j],
+                    )
 
                 if skip_Mstep:
                     z_t_next = z_t_next.detach()
@@ -642,7 +681,7 @@ class LatentDEMSampler(DDIMSampler):
             # Optimize phis, except phi_1
 
             if skip_Mstep:
-                print(f"\n pred_phi2: {phis}")
+                print(f"\npred_phi2: {phis}")
 
             else:
                 phis = self.M_step(
@@ -651,13 +690,18 @@ class LatentDEMSampler(DDIMSampler):
                     z_total=z_total,
                     z_list_next=z_list_next,
                     index=index,
+                    sample_from_start=sample_from_start,
                 )
 
+            # TEST
             z_list_next[0] = z_total
+            # z_list_next[1] = z_total
 
             z_list = copy.copy(z_list_next)
 
-        return z_list[0], phis
+            torch.cuda.empty_cache()
+
+        return z_total, phis
 
     def p_sample_ddim(
         self,
@@ -737,8 +781,11 @@ class LatentDEMSampler(DDIMSampler):
         # gamma_n = beta_t / (img_num * beta_t + nu_t**2)
         # delta_n = (beta_t + nu_t**2) / (img_num * beta_t + nu_t**2)
 
-        gamma_n = index / 100
-        delta_n = 1 - gamma_n
+        # gamma_n = index / 100
+        # delta_n = 1 - gamma_n
+
+        gamma_n = 0.5
+        delta_n = 0.5
 
         z_weighted_sum = 0
         for i in range(len(z_list)):
@@ -760,6 +807,10 @@ class LatentDEMSampler(DDIMSampler):
             - (1 / alpha_t.sqrt()) * z_weighted_sum
         )
 
+        noise = noise_like(z_total.shape, z_total.device, False)
+        # z_total = z_total + noise * beta_t / 2
+        # z_total = (z_total + noise * beta_t / 2) * alpha_t.sqrt()
+
         return z_total
 
     def M_step(
@@ -769,6 +820,7 @@ class LatentDEMSampler(DDIMSampler):
         z_total,
         z_list_next,
         index,
+        sample_from_start,
     ):
 
         assert len(phis) == img_num
@@ -790,13 +842,13 @@ class LatentDEMSampler(DDIMSampler):
             loss1 = torch.sum((z_list_next[i] - z_total) ** 2)
             loss2 = torch.sum((z_list_next[i] - z_list_next[0]) ** 2)
 
-            loss_image = torch.sum(
-                (
-                    self.model.decode_first_stage(z_list_next[i])
-                    - self.model.decode_first_stage(z_list_next[0])
-                )
-                ** 2
-            )
+            # loss_image = torch.sum(
+            #     (
+            #         self.model.decode_first_stage(z_list_next[i])
+            #         - self.model.decode_first_stage(z_list_next[0])
+            #     )
+            #     ** 2
+            # )
 
             loss = lambda_coef * loss1 + delta_coef * loss2
 
@@ -805,6 +857,8 @@ class LatentDEMSampler(DDIMSampler):
                 inputs=phis[i],
             )
 
+            torch.cuda.empty_cache()
+
             # FIXME: Currently z is not updated
             phi_grad[0][2] = 0
 
@@ -812,8 +866,7 @@ class LatentDEMSampler(DDIMSampler):
             phi_next = phis[i] - phi_grad[0] * lr
 
             phis_next.append(phi_next.detach())
-            print(
-                f"Loss(Latent):{loss2}, Loss(Image):{loss_image}, phi2_pred:{phi_next.detach().numpy()}\n"
-            )
+
+            print(f"Loss(Latent):{loss2}, phi2_pred:{phi_next.detach().numpy()}\n")
 
         return phis_next
