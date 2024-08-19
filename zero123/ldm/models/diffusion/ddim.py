@@ -548,7 +548,11 @@ class LatentDEMSampler(DDIMSampler):
         log_every_t=100,
         unconditional_guidance_scale=1.0,
         skip_Mstep=False,
-        sample_from_start=True,
+        sample_from=None,
+        Estep_scheduling=None,
+        Mstep_scheduling=None,
+        lr=1,
+        lr_decay=False,
     ):
 
         device = self.model.betas.device
@@ -614,7 +618,7 @@ class LatentDEMSampler(DDIMSampler):
             for j in range(img_num):
                 z_t = z_list[j]
 
-                if sample_from_start and j != 0:
+                if sample_from == "start" and j != 0:
                     # For every timestep, sample from T (T -> t)
 
                     # For seed fix, uncomment the following line
@@ -696,6 +700,8 @@ class LatentDEMSampler(DDIMSampler):
                 z_list=z_list,
                 z_list_next=z_list_next,
                 img_num=img_num,
+                phis=phis,
+                Estep_scheduling=Estep_scheduling,
             )
 
             # M-step
@@ -711,12 +717,20 @@ class LatentDEMSampler(DDIMSampler):
                     z_total=z_total,
                     z_list_next=z_list_next,
                     index=index,
-                    sample_from_start=sample_from_start,
+                    Mstep_scheduling=Mstep_scheduling,
+                    lr=lr,
+                    lr_decay=lr_decay,
                 )
 
-            # TEST
-            z_list_next[0] = z_total
-            # z_list_next[1] = z_total
+            if sample_from == "start":
+                z_list_next[0] = z_total
+
+            elif sample_from == "middle":
+                z_list_next[0] = z_total
+                z_list_next[1] = z_total
+
+            elif sample_from == "prev":
+                z_list_next[0] = z_total
 
             z_list = copy.copy(z_list_next)
 
@@ -789,22 +803,43 @@ class LatentDEMSampler(DDIMSampler):
 
         return z_prev, pred_z0
 
-    def E_step(self, z_total, index, nus, z_list, z_list_next, img_num):
-        nu_t = nus[index]
+    def E_step(
+        self, z_total, index, nus, z_list, z_list_next, img_num, phis, Estep_scheduling
+    ):
         beta_t = torch.full(
             (z_total.shape[0], 1, 1, 1), self.betas[index], device=z_total.device
         )
         alpha_t = 1 - beta_t
-        # FIXME: Scheduling gammas and deltas
 
+        if Estep_scheduling == "linear":
+            gamma_n = index / 100
+            delta_n = 1 - gamma_n
+
+        elif Estep_scheduling == "fixed":
+            gamma_n = 0.5
+            delta_n = 0.5
+
+        elif Estep_scheduling == "curve":
+            curve_1 = 1 - math.cos(math.radians(phis[0][0])) * math.cos(
+                math.radians(phis[0][1])
+            )
+            curve_2 = 1 - math.cos(math.radians(phis[1][0])) * math.cos(
+                math.radians(phis[1][1])
+            )
+            gamma_n = (curve_1) / (curve_1 + curve_2)
+            delta_n = 1 - gamma_n
+
+        else:
+            print("Shouldn't come here")
+            gamma_n = 0
+            delta_n = 0
+
+        # TODO: Using nus
+        # nu_t = nus[index]
         # gamma_n = beta_t / (img_num * beta_t + nu_t**2)
         # delta_n = (beta_t + nu_t**2) / (img_num * beta_t + nu_t**2)
 
-        # gamma_n = index / 100
-        # delta_n = 1 - gamma_n
-
-        gamma_n = 0.5
-        delta_n = 0.5
+        print(f"gamma_n: {gamma_n}")
 
         z_weighted_sum = 0
         for i in range(len(z_list)):
@@ -839,14 +874,27 @@ class LatentDEMSampler(DDIMSampler):
         z_total,
         z_list_next,
         index,
-        sample_from_start,
+        Mstep_scheduling,
+        lr,
+        lr_decay,
     ):
 
         assert len(phis) == img_num
 
         # TODO: Lambda, Delta Scheduling
-        lambda_coef = 10
-        delta_coef = 10
+
+        if Mstep_scheduling == "linear":
+            lambda_coef = index / 10
+            delta_coef = 5
+
+        elif Mstep_scheduling == "fixed":
+            lambda_coef = 5
+            delta_coef = 5
+
+        else:
+            print("Shouldn't come here")
+            lambda_coef = 0
+            delta_coef = 0
 
         phis_next = []
         phis_next.append(phis[0])
@@ -861,14 +909,6 @@ class LatentDEMSampler(DDIMSampler):
             loss1 = torch.sum((z_list_next[i] - z_total) ** 2)
             loss2 = torch.sum((z_list_next[i] - z_list_next[0]) ** 2)
 
-            # loss_image = torch.sum(
-            #     (
-            #         self.model.decode_first_stage(z_list_next[i])
-            #         - self.model.decode_first_stage(z_list_next[0])
-            #     )
-            #     ** 2
-            # )
-
             loss = lambda_coef * loss1 + delta_coef * loss2
 
             phi_grad = torch.autograd.grad(
@@ -881,7 +921,9 @@ class LatentDEMSampler(DDIMSampler):
             # FIXME: Currently z is not updated
             phi_grad[0][2] = 0
 
-            lr = 0.1 ** ((50 - index) / 50)
+            if lr_decay:
+                lr = lr ** ((50 - index) / 50)
+
             phi_next = phis[i] - phi_grad[0] * lr
 
             phis_next.append(phi_next.detach())

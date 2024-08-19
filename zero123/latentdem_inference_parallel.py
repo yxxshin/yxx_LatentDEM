@@ -96,7 +96,11 @@ def sample_model(
     y,
     z,
     skip_Mstep,
-    sample_from_start,
+    sample_from,
+    Estep_scheduling,
+    Mstep_scheduling,
+    lr,
+    lr_decay,
 ):
     precision_scope = autocast if precision == "autocast" else nullcontext
     with precision_scope("cuda"):
@@ -171,7 +175,11 @@ def sample_model(
                 eta=ddim_eta,
                 x_T=None,
                 skip_Mstep=skip_Mstep,
-                sample_from_start=sample_from_start,
+                sample_from=sample_from,
+                Estep_scheduling=Estep_scheduling,
+                Mstep_scheduling=Mstep_scheduling,
+                lr=lr,
+                lr_decay=lr_decay,
             )
 
             print(f"phis: {phis}")
@@ -190,7 +198,11 @@ def main(
     init_poses=None,
     preprocess=True,
     skip_Mstep=False,
-    sample_from_start=True,
+    sample_from=None,
+    Estep_scheduling=None,
+    Mstep_scheduling=None,
+    lr=1,
+    lr_decay=False,
     scale=3.0,
     n_samples=1,
     ddim_steps=50,
@@ -243,7 +255,11 @@ def main(
         y,
         z,
         skip_Mstep,
-        sample_from_start,
+        sample_from,
+        Estep_scheduling,
+        Mstep_scheduling,
+        lr,
+        lr_decay,
     )
 
     output_ims = []
@@ -262,15 +278,38 @@ if __name__ == "__main__":
     parser.add_argument(
         "--init_pose", "-p", type=str, help="Initial pose of images (phi2, phi3, ...)"
     )
+
     parser.add_argument(
-        "--use_gt",
+        "--skip_Mstep",
         action="store_true",
         help="If on, skip M step and use initial pose",
     )
     parser.add_argument(
-        "--sample_from_start",
-        action="store_true",
-        help="If on, sample phi2 from T during every timestep (original LatentDEM)",
+        "--sample_from",
+        type=str,
+        required=True,
+        help="sample phi2 from start/middle/prev",
+    )
+    parser.add_argument(
+        "--Estep_scheduling",
+        type=str,
+        required=True,
+        help="Gamma scheduling: linear/fixed/curve",
+    )
+    parser.add_argument(
+        "--Mstep_scheduling",
+        type=str,
+        required=True,
+        help="Lambda scheduling: linear/fixed",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        required=True,
+        help="Learning rate",
+    )
+    parser.add_argument(
+        "--lr_decay", action="store_true", help="If on, decrease lr by timestep"
     )
     parser.add_argument("--ckpt", type=str, default="weights/zero123-xl.ckpt")
     parser.add_argument(
@@ -322,8 +361,18 @@ if __name__ == "__main__":
     else:
         poses = None
 
+    # Verification of arguments
     if poses == None and args.use_gt:
         raise ValueError("Initial pose needed for use_gt mode")
+
+    if args.sample_from not in ["start", "middle", "prev"]:
+        raise ValueError("sample_from should be one of start/middle/prev")
+
+    if args.Estep_scheduling not in ["linear", "fixed", "curve"]:
+        raise ValueError("Estep_scheduling should be one of linear/fixed/curve")
+
+    if args.Mstep_scheduling not in ["linear", "fixed"]:
+        raise ValueError("Mstep_scheduling should be one of linear/fixed")
 
     angles = [
         [0, 0],
@@ -347,13 +396,17 @@ if __name__ == "__main__":
         main(
             models=models,
             device=device,
-            output=f"../data/0809_results/14/backpack/latentdem_{angles[i][0]}_{angles[i][1]}.png",
+            output=f"../data/0814_results/backpack/latentdem_{angles[i][0]}_{angles[i][1]}.png",
             x=angles[i][0],
             y=angles[i][1],
             z=0,
             img_paths=paths,
             init_poses=poses,
             preprocess=False,
-            skip_Mstep=args.use_gt,
-            sample_from_start=args.sample_from_start,
+            skip_Mstep=args.skip_Mstep,
+            sample_from=args.sample_from,
+            Estep_scheduling=args.Estep_scheduling,
+            Mstep_scheduling=args.Mstep_scheduling,
+            lr=args.lr,
+            lr_decay=args.lr_decay,
         )
