@@ -101,6 +101,7 @@ def sample_model(
     Mstep_scheduling,
     lr,
     lr_decay,
+    save_to_txt,
 ):
     precision_scope = autocast if precision == "autocast" else nullcontext
     with precision_scope("cuda"):
@@ -184,6 +185,10 @@ def sample_model(
 
             print(f"phis: {phis}")
 
+            if save_to_txt is not None:
+                with open(save_to_txt, "a") as f:
+                    f.write(f"phis: {phis}\n")
+
             x_samples = model.decode_first_stage(z_samples)
             return torch.clamp((x_samples + 1.0) / 2.0, min=0.0, max=1.0).cpu()
 
@@ -211,6 +216,7 @@ def main(
     precision="fp32",
     h=256,
     w=256,
+    save_to_txt=None,
 ):
 
     # safety_checker_input = models["clip_fe"](raw_im, return_tensors="pt").to(device)
@@ -261,6 +267,7 @@ def main(
         Mstep_scheduling,
         lr,
         lr_decay,
+        save_to_txt,
     )
 
     output_ims = []
@@ -316,6 +323,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--lr_decay", action="store_true", help="If on, decrease lr by timestep"
+    )
+    parser.add_argument(
+        "--save_to_txt", type=str, help="Store phi2 results to text file"
     )
 
     parser.add_argument("--ckpt", type=str, default="weights/zero123-xl.ckpt")
@@ -397,4 +407,5 @@ if __name__ == "__main__":
         Mstep_scheduling=args.Mstep_scheduling,
         lr=args.lr,
         lr_decay=args.lr_decay,
+        save_to_txt=args.save_to_txt,
     )
